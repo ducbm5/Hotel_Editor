@@ -1,0 +1,5 @@
+{
+  "name": "Booking Hotel Crawler",
+  "description": "Công cụ crawl dữ liệu khách sạn từ Booking.com và lưu vào Google Sheets.",
+  "requestFramePermissions": []
+}

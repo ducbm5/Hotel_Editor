@@ -1,7 +1,10 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Search, Sheet, Send, Loader2, CheckCircle2, AlertCircle, Eye, Edit3, Trash2 } from "lucide-react";
+import { Search, Sheet, Send, Loader2, CheckCircle2, AlertCircle, Eye, Edit3, Trash2, Image } from "lucide-react";
 import axios from "axios";
+import { GoogleGenAI } from "@google/genai";
+
+const modelName = "gemini-3-flash-preview";
 
 interface CrawledData {
   url: string;
@@ -16,17 +19,15 @@ interface CrawledData {
   location: string;
   hotel_id: string;
   location_id: string;
+  contact_name: string;
+  contact_phone: string;
 }
 
-import { GoogleGenAI } from "@google/genai";
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const model = "gemini-3-flash-preview";
-
-const FIXED_SHEET_URL = "https://script.google.com/macros/s/AKfycbwnDrT2wiDzLNpqfNOB-sH4z8pQgmuMVrmbWOr-kLEcKcPRKHAXDh0vuJT5wPcU4BAtlQ/exec";
+const FIXED_SHEET_URL = "https://script.google.com/macros/s/AKfycbwQXvM5cuvuNtQbp-KZryYDN-wRM3VSdqWhxyO14q2_UfsqNZbgI1iEvgcPGp9gW6XYXg/exec";
 
 export default function App() {
   const [bookingUrl, setBookingUrl] = useState("");
+  const [galleryUrl, setGalleryUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
@@ -38,28 +39,92 @@ export default function App() {
   const [htmlContent, setHtmlContent] = useState("");
   const [step, setStep] = useState(1); // 1: Crawl, 2: AI Rewrite, 3: HTML Template, 4: Submit
 
-  const handleCrawl = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!bookingUrl) return;
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
+  const getAi = () => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === "undefined") {
+      throw new Error("API Key không khả dụng. Vui lòng kiểm tra cấu hình.");
+    }
+    return new GoogleGenAI({ apiKey });
+  };
+
+  const handleCrawlImages = async () => {
+    if (!galleryUrl) {
+      setError("Vui lòng nhập Link Gallery");
+      return;
+    }
 
     setLoading(true);
     setError(null);
     setSuccess(null);
-    setCrawledData(null);
-    setSelectedImages([]);
-    setStep(1);
-
+    
     try {
-      const response = await axios.post("/api/crawl", { booking_url: bookingUrl });
-      const data = response.data;
-      setCrawledData({
-        ...data,
-        nearby_html: "" // Initialize manual field
+      const response = await axios.post("/api/crawl", { 
+        gallery_url: galleryUrl 
       });
-      // Select first 5 images by default
+      const data = response.data;
+      
+      setCrawledData(prev => {
+        const base = prev || {
+          url: "", name: "", images: [], description: "", amenities: "",
+          price: "", rating: "", nearby_html: "", map_url: "", location: "",
+          hotel_id: "", location_id: "", contact_name: "", contact_phone: ""
+        };
+        return {
+          ...base,
+          images: data.images,
+          url: base.url || data.url,
+          name: base.name || data.name
+        };
+      });
+      
       setSelectedImages(data.images?.slice(0, 5) || []);
+      setSuccess("Đã quét xong ảnh từ Gallery!");
+      setStep(1);
     } catch (err: any) {
-      setError(err.response?.data?.error || "Đã có lỗi xảy ra khi crawl dữ liệu.");
+      setError(err.response?.data?.error || "Đã có lỗi xảy ra khi quét ảnh.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCrawlContent = async () => {
+    if (!bookingUrl) {
+      setError("Vui lòng nhập Link Booking.com");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+    
+    try {
+      const response = await axios.post("/api/crawl", { 
+        booking_url: bookingUrl 
+      });
+      const data = response.data;
+      
+      setCrawledData(prev => {
+        const base = prev || {
+          url: "", name: "", images: [], description: "", amenities: "",
+          price: "", rating: "", nearby_html: "", map_url: "", location: "",
+          hotel_id: "", location_id: "", contact_name: "", contact_phone: ""
+        };
+        return {
+          ...base,
+          ...data,
+          images: base.images.length > 0 ? base.images : data.images,
+          nearby_html: base.nearby_html || "",
+          contact_name: base.contact_name || "",
+          contact_phone: base.contact_phone || ""
+        };
+      });
+      
+      setSuccess("Đã quét xong nội dung từ Booking.com!");
+      setStep(1);
+    } catch (err: any) {
+      setError(err.response?.data?.error || "Đã có lỗi xảy ra khi quét nội dung.");
     } finally {
       setLoading(false);
     }
@@ -70,6 +135,7 @@ export default function App() {
     setAiGenerating(true);
     setError(null);
     try {
+      const ai = getAi();
       const prompt = `Bạn là một biên tập viên nội dung chuyên về du lịch dành cho runner.
 
 Dựa trên dữ liệu khách sạn dưới đây, hãy viết một đoạn mô tả ngắn gọn giúp runner đánh giá khách sạn này có phù hợp để lưu trú khi tham gia giải chạy kết hợp du lịch hay không.
@@ -124,11 +190,14 @@ Dựa trên dữ liệu khách sạn dưới đây, hãy viết một đoạn m�
 Một đoạn văn duy nhất, giúp runner đọc nhanh và hiểu khách sạn này có phù hợp với nhu cầu du lịch kết hợp chạy hay không.`;
 
       const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
+        model: modelName,
+        contents: prompt
       });
-
-      setAiContent(response.text || "");
+      
+      const text = response.text;
+      if (!text) throw new Error("AI không trả về kết quả.");
+      
+      setAiContent(text);
       setStep(2);
     } catch (err: any) {
       console.error("AI Error:", err);
@@ -143,6 +212,7 @@ Một đoạn văn duy nhất, giúp runner đọc nhanh và hiểu khách sạn
     setAiGenerating(true);
     setError(null);
     try {
+      const ai = getAi();
       const prompt = `Bạn là một hệ thống chuyển đổi nội dung thành HTML theo template cố định, phục vụ hiển thị trên website.
 
 ## INPUT:
@@ -209,13 +279,15 @@ ${aiContent}
 Chỉ trả về HTML hoàn chỉnh, không có bất kỳ nội dung nào khác.`;
 
       const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
+        model: modelName,
+        contents: prompt
       });
-
+      
+      const text = response.text;
+      if (!text) throw new Error("AI không trả về kết quả.");
+      
       // Clean up markdown code blocks if AI includes them
-      let cleanedHtml = response.text || "";
-      cleanedHtml = cleanedHtml.replace(/```html/g, "").replace(/```/g, "").trim();
+      let cleanedHtml = text.replace(/```html/g, "").replace(/```/g, "").trim();
       
       setHtmlContent(cleanedHtml);
       setStep(3);
@@ -243,7 +315,7 @@ Chỉ trả về HTML hoàn chỉnh, không có bất kỳ nội dung nào khác
     try {
       console.log("Đang gửi dữ liệu đến:", FIXED_SHEET_URL);
       
-      // Updated 9-column structure: hotel_id, url, name, gallery_html, description_html, map_url, location, location_id, update_time
+      // Updated 11-column structure: hotel_id, url, name, gallery_html, description_html, map_url, location, location_id, contact_name, contact_phone, update_time
       const payload = JSON.stringify({
         hotel_id: crawledData.hotel_id,
         url: crawledData.url,
@@ -253,6 +325,8 @@ Chỉ trả về HTML hoàn chỉnh, không có bất kỳ nội dung nào khác
         map_url: crawledData.map_url,
         location: crawledData.location,
         location_id: crawledData.location_id,
+        contact_name: crawledData.contact_name,
+        contact_phone: crawledData.contact_phone,
         update_time: new Date().toLocaleString("vi-VN")
       });
 
@@ -268,6 +342,7 @@ Chỉ trả về HTML hoàn chỉnh, không có bất kỳ nội dung nào khác
       
       setSuccess("Dữ liệu đã được lưu thành công vào Google Sheet!");
       setBookingUrl("");
+      setGalleryUrl("");
       setCrawledData(null);
       setSelectedImages([]);
       setAiContent("");
@@ -301,43 +376,138 @@ Chỉ trả về HTML hoàn chỉnh, không có bất kỳ nội dung nào khác
           <p className="text-slate-500">Crawl dữ liệu khách sạn và lưu vào Google Sheets tự động.</p>
         </header>
 
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 md:p-8 mb-8"
-        >
-          <form onSubmit={handleCrawl} className="space-y-6">
-            <div className="space-y-2">
-              <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                <Search size={16} /> Link Booking.com
-              </label>
+        {/* Image Preview Modal */}
+        <AnimatePresence>
+          {previewImage && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+              onClick={() => setPreviewImage(null)}
+            >
+              <motion.div
+                initial={{ scale: 0.9, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.9, opacity: 0 }}
+                className="relative max-w-4xl w-full max-h-[90vh] bg-white rounded-2xl overflow-hidden shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <img 
+                  src={previewImage} 
+                  alt="Preview" 
+                  className="w-full h-full object-contain" 
+                  referrerPolicy="no-referrer"
+                />
+                <button
+                  onClick={() => setPreviewImage(null)}
+                  className="absolute top-4 right-4 bg-black/50 hover:bg-black/70 text-white p-2 rounded-full transition-colors"
+                >
+                  <Trash2 size={20} className="rotate-45" />
+                </button>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="space-y-8 mb-8">
+          {/* Step 1: Images */}
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className={`bg-white rounded-2xl shadow-xl border-2 p-6 transition-all ${
+              crawledData?.images && crawledData.images.length > 0 ? "border-green-100" : "border-blue-100"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${
+                  crawledData?.images && crawledData.images.length > 0 ? "bg-green-500 text-white" : "bg-blue-600 text-white"
+                }`}>
+                  {crawledData?.images && crawledData.images.length > 0 ? <CheckCircle2 size={20} /> : "1"}
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                    <Image size={20} className="text-blue-600" /> BƯỚC 1: QUÉT TOÀN BỘ ẢNH
+                  </h3>
+                  <p className="text-sm text-slate-500">Dán link Gallery để lấy ảnh chất lượng cao nhất</p>
+                </div>
+              </div>
+              {crawledData?.images && crawledData.images.length > 0 && (
+                <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">
+                  Đã có {crawledData.images.length} ảnh
+                </span>
+              )}
+            </div>
+            
+            <div className="flex flex-col md:flex-row gap-4">
               <input
                 type="url"
-                placeholder="https://www.booking.com/hotel/..."
-                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
-                value={bookingUrl}
-                onChange={(e) => setBookingUrl(e.target.value)}
-                required
+                placeholder="Dán link gallery (ví dụ: https://www.booking.com/hotel/vn/...) "
+                className="flex-grow px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                value={galleryUrl}
+                onChange={(e) => setGalleryUrl(e.target.value)}
               />
+              <button
+                onClick={handleCrawlImages}
+                disabled={loading || !galleryUrl}
+                className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 text-white font-bold px-8 py-3 rounded-xl transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-lg shadow-blue-100"
+              >
+                {loading ? <Loader2 className="animate-spin" size={20} /> : <Image size={20} />}
+                Bắt đầu quét ảnh
+              </button>
+            </div>
+          </motion.div>
+
+          {/* Step 2: Content */}
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+            className={`bg-white rounded-2xl shadow-xl border-2 p-6 transition-all ${
+              crawledData?.description ? "border-green-100" : "border-slate-100"
+            }`}
+          >
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${
+                  crawledData?.description ? "bg-green-500 text-white" : "bg-slate-200 text-slate-500"
+                }`}>
+                  {crawledData?.description ? <CheckCircle2 size={20} /> : "2"}
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-slate-800 flex items-center gap-2">
+                    <Search size={20} className="text-green-600" /> BƯỚC 2: QUÉT NỘI DUNG (MÔ TẢ)
+                  </h3>
+                  <p className="text-sm text-slate-500">Dán link Booking.com để lấy thông tin chi tiết</p>
+                </div>
+              </div>
+              {crawledData?.description && (
+                <span className="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-bold">
+                  Đã có nội dung
+                </span>
+              )}
             </div>
 
-            <button
-              type="submit"
-              disabled={loading || !bookingUrl}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white font-bold py-4 rounded-xl shadow-lg shadow-blue-200 transition-all flex items-center justify-center gap-2"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="animate-spin" /> Đang crawl dữ liệu...
-                </>
-              ) : (
-                <>
-                  <Search size={20} /> Bắt đầu Crawl
-                </>
-              )}
-            </button>
-          </form>
-        </motion.div>
+            <div className="flex flex-col md:flex-row gap-4">
+              <input
+                type="url"
+                placeholder="https://www.booking.com/hotel/vn/..."
+                className="flex-grow px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all outline-none"
+                value={bookingUrl}
+                onChange={(e) => setBookingUrl(e.target.value)}
+              />
+              <button
+                onClick={handleCrawlContent}
+                disabled={loading || !bookingUrl}
+                className="bg-green-600 hover:bg-green-700 disabled:bg-slate-200 text-white font-bold px-8 py-3 rounded-xl transition-all flex items-center justify-center gap-2 whitespace-nowrap shadow-lg shadow-green-100"
+              >
+                {loading ? <Loader2 className="animate-spin" size={20} /> : <Search size={20} />}
+                Bắt đầu quét nội dung
+              </button>
+            </div>
+          </motion.div>
+        </div>
 
         <AnimatePresence>
           {error && (
@@ -382,7 +552,7 @@ Chỉ trả về HTML hoàn chỉnh, không có bất kỳ nội dung nào khác
                     {step > s ? <CheckCircle2 size={16} /> : s}
                   </div>
                   <span className={`text-xs font-bold uppercase tracking-wider ${step === s ? "text-blue-600" : "text-slate-400"}`}>
-                    {s === 1 ? "Crawl" : s === 2 ? "AI Text" : s === 3 ? "AI HTML" : "Submit"}
+                    {s === 1 ? "Quét dữ liệu" : s === 2 ? "Viết nội dung" : s === 3 ? "Tạo HTML" : "Hoàn tất"}
                   </span>
                   {s < 4 && <div className="w-8 h-px bg-slate-200" />}
                 </div>
@@ -418,23 +588,57 @@ Chỉ trả về HTML hoàn chỉnh, không có bất kỳ nội dung nào khác
                           {selectedImages.length === crawledData.images.length ? "Bỏ chọn tất cả" : "Chọn tất cả"}
                         </button>
                       </div>
-                      <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2 max-h-64 overflow-y-auto p-2 border border-slate-100 rounded-xl bg-slate-50/30">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 max-h-[500px] overflow-y-auto p-3 border border-slate-100 rounded-xl bg-slate-50/30">
                         {crawledData.images.map((img, idx) => (
                           <div 
                             key={idx} 
                             onClick={() => toggleImage(img)}
-                            className={`relative aspect-square rounded-lg overflow-hidden cursor-pointer border-2 transition-all ${
-                              selectedImages.includes(img) ? "border-blue-500 ring-2 ring-blue-200" : "border-transparent opacity-60 hover:opacity-100"
+                            className={`relative aspect-[4/3] rounded-lg overflow-hidden cursor-pointer border-2 transition-all group ${
+                              selectedImages.includes(img) ? "border-blue-500 ring-2 ring-blue-200 shadow-md" : "border-transparent opacity-70 hover:opacity-100"
                             }`}
                           >
-                            <img src={img} alt={`Gallery ${idx}`} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                            <img src={img} alt={`Gallery ${idx}`} className="w-full h-full object-cover transition-transform group-hover:scale-105" referrerPolicy="no-referrer" />
+                            <div className="absolute inset-0 bg-black/10 group-hover:bg-transparent transition-colors" />
+                            <button 
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPreviewImage(img);
+                              }}
+                              className="absolute bottom-2 left-2 bg-white/90 text-slate-700 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-white"
+                            >
+                              <Eye size={14} />
+                            </button>
                             {selectedImages.includes(img) && (
-                              <div className="absolute top-1 right-1 bg-blue-500 text-white rounded-full p-0.5 shadow-md">
-                                <CheckCircle2 size={12} />
+                              <div className="absolute top-2 right-2 bg-blue-500 text-white rounded-full p-1 shadow-lg">
+                                <CheckCircle2 size={16} />
                               </div>
                             )}
                           </div>
                         ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100 space-y-2">
+                        <label className="text-xs font-bold uppercase tracking-wider text-emerald-600">Tên người liên hệ</label>
+                        <input
+                          type="text"
+                          placeholder="Nguyễn Văn A..."
+                          className="w-full px-4 py-2 rounded-lg border border-emerald-200 focus:ring-2 focus:ring-emerald-500 outline-none font-bold text-emerald-900"
+                          value={crawledData.contact_name}
+                          onChange={(e) => updateField("contact_name", e.target.value)}
+                        />
+                      </div>
+                      <div className="bg-rose-50 p-4 rounded-xl border border-rose-100 space-y-2">
+                        <label className="text-xs font-bold uppercase tracking-wider text-rose-600">Số điện thoại liên hệ</label>
+                        <input
+                          type="tel"
+                          placeholder="090..."
+                          className="w-full px-4 py-2 rounded-lg border border-rose-200 focus:ring-2 focus:ring-rose-500 outline-none font-bold text-rose-900"
+                          value={crawledData.contact_phone}
+                          onChange={(e) => updateField("contact_phone", e.target.value)}
+                        />
                       </div>
                     </div>
 
